@@ -1,0 +1,10 @@
+# =============================================================================
+# Arco Educação — Data Engineering Platform Challenge
+# Requires Python >= 3.10
+# =============================================================================
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+pandas>=2.0.0
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+python-dotenv>=1.0.0
