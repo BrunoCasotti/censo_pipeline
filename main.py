@@ -87,7 +87,7 @@ def main() -> None:
         import pandas as pd
         logger.info("📊 AMOSTRA DOS DADOS ANALÍTICOS (TOP 3):")
         df_top3 = pd.read_sql(
-            "SELECT * FROM analytics.vw_censo_escolar_agregado LIMIT 3", 
+            "SELECT * FROM gold.vw_censo_escolar_agregado LIMIT 3", 
             get_engine()
         )
         records = df_top3.to_dict(orient="records")

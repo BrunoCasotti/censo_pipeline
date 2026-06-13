@@ -29,7 +29,7 @@ Este pipeline automatiza o processo completo de **ELT (Extract, Load, Transform)
 │   INEP Web   │────▶│   Download   │────▶│   Load to    │────▶│  Transform   │
 │  (Scraping)  │     │  ZIP + CSV   │     │  PostgreSQL  │     │  (SQL Views) │
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
-    Dinâmico          Streaming           Chunks + UPSERT       analytics.*
+    Dinâmico          Streaming           Chunks + UPSERT       gold.*
 ```
 
 ### Decisões Técnicas
@@ -41,10 +41,10 @@ Este pipeline automatiza o processo completo de **ELT (Extract, Load, Transform)
 | **`tempfile.mkdtemp()`** | Diretório temporário portável entre Windows, Linux, macOS e WSL. Sem caminhos hardcoded. |
 | **Chunks de 50k linhas** | Controla consumo de memória. Funciona em ambientes com apenas 4GB de RAM (ex: WSL). Configurável via `.env`. |
 | **Escala Nacional** | O pipeline processa dados de todas as UF's do Brasil em uma única rodada (filtro desativado). |
-| **Staging + Raw (3 camadas)** | Staging permite reprocessamento; Raw com UPSERT garante idempotência; Analytics gera métricas limpas. |
+| **Raw + Silver (3 camadas)** | Raw permite reprocessamento; Silver com UPSERT garante idempotência; Gold gera métricas limpas. |
 | **UPSERT com chave composta** | `(CO_ENTIDADE, NU_ANO_CENSO)` garante que re-execuções não dupliquem dados. |
 | **SQLAlchemy 2.0+** | API moderna com tipagem, connection pooling e compatibilidade com Supabase. |
-| **Todas as colunas TEXT na staging** | Evita erros de parse em CSV com dados sujos. A conversão de tipos ocorre no UPSERT para raw. |
+| **Todas as colunas TEXT na raw** | Evita erros de parse em CSV com dados sujos. A conversão de tipos ocorre no UPSERT para silver. |
 
 ---
 
@@ -57,7 +57,7 @@ O banco segue uma arquitetura em **3 camadas**:
 │                    PostgreSQL (Supabase)                 │
 │                                                         │
 │  ┌─────────────┐   ┌─────────────┐   ┌───────────────┐ │
-│  │   staging    │──▶│     raw     │──▶│   analytics   │ │
+│  │   raw    │──▶│     silver     │──▶│   gold   │ │
 │  │  (TEXT cols) │   │ (Typed +    │   │  (SQL Views)  │ │
 │  │  Temporário  │   │  UPSERT PK) │   │  Métricas     │ │
 │  └─────────────┘   └─────────────┘   └───────────────┘ │
@@ -70,12 +70,12 @@ O banco segue uma arquitetura em **3 camadas**:
 
 | Schema | Tabela | Chave Primária | Descrição |
 |---|---|---|---|
-| `staging` | `escolas` | — | Dados brutos das escolas (TEXT) |
-| `staging` | `turmas` | — | Dados brutos das turmas (TEXT) |
-| `staging` | `matriculas` | — | Dados brutos das matrículas (TEXT) |
-| `raw` | `escolas` | `(co_entidade, nu_ano_censo)` | Escolas com tipos corretos |
-| `raw` | `turmas` | `(id_turma, nu_ano_censo)` | Turmas com tipos corretos |
-| `raw` | `matriculas` | `(id_matricula, nu_ano_censo)` | Matrículas com tipos corretos |
+| `raw` | `escolas` | — | Dados brutos das escolas (TEXT) |
+| `raw` | `turmas` | — | Dados brutos das turmas (TEXT) |
+| `raw` | `matriculas` | — | Dados brutos das matrículas (TEXT) |
+| `silver` | `escolas` | `(co_entidade, nu_ano_censo)` | Escolas com tipos corretos |
+| `silver` | `turmas` | `(id_turma, nu_ano_censo)` | Turmas com tipos corretos |
+| `silver` | `matriculas` | `(id_matricula, nu_ano_censo)` | Matrículas com tipos corretos |
 
 ### Chaves Relacionais (Diretriz INEP)
 
@@ -154,7 +154,7 @@ python main.py
 O pipeline executará automaticamente:
 1. ✅ Criação de schemas e tabelas no Supabase
 2. ✅ Download dos microdados mais recentes do INEP
-3. ✅ Carga massiva em chunks (Nacional) com UPSERT para raw
+3. ✅ Carga massiva em chunks (Nacional) com UPSERT para silver
 4. ✅ Criação das views analíticas
 
 ---
@@ -168,7 +168,7 @@ arco_dataeng_platform_challenge/
 │   ├── config.py            # Configurações centralizadas (env vars)
 │   ├── init_db.py           # Setup automático do banco (DDL)
 │   ├── extract.py           # Scraping + download + extração
-│   └── load.py              # CSV → Staging (chunks) → Raw (UPSERT)
+│   └── load.py              # CSV → Raw (chunks) → Silver (UPSERT)
 ├── sql/
 │   ├── ddl.sql              # CREATE SCHEMA + CREATE TABLE
 │   └── transformations.sql  # Wide Table Analítica (Mestra)
@@ -183,7 +183,7 @@ arco_dataeng_platform_challenge/
 
 ## 📈 Métricas Geradas
 
-O pipeline consolida todos os dados do país em uma única **Wide Table** (View Mestra) no schema `analytics`:
+O pipeline consolida todos os dados do país em uma única **Wide Table** (View Mestra) no schema `gold`:
 
 | View | Descrição |
 |---|---|
@@ -222,33 +222,35 @@ Ao final do pipeline, o Python automaticamente puxa os **Top 3 resultados** do b
 
 ## 💡 Perguntas Conceituais
 
-### 1. Como atualizar diariamente usando GCP/Cloud Composer?
+### 1. Como atualizar diariamente utilizando Terraform, GitHub Actions, Docker e Kubernetes?
 
-Para transformar este pipeline *one-shot* em uma execução diária na GCP:
+Para transformar este pipeline *one-shot* em uma execução diária robusta, aderente às práticas de DevOps e Plataforma de Dados utilizadas em ambientes corporativos escaláveis (como na Arco):
 
 **Arquitetura proposta:**
 
-```
-Cloud Scheduler (cron diário)
-    └──▶ Cloud Composer (Airflow)
-            └──▶ DAG com 4 Tasks:
-                  ├── setup_db_task      (PythonOperator → init_db.setup())
-                  ├── extract_task       (PythonOperator → extract.run())
-                  ├── load_task          (PythonOperator → load.run())
-                  └── transform_task     (PostgresOperator → transformations.sql)
+```text
+Terraform (IaC)
+    ├── Provisiona Banco de Dados (PostgreSQL)
+    ├── Provisiona Container Registry (AWS ECR ou GCP Artifact Registry)
+    └── Provisiona Cluster Kubernetes (EKS / GKE)
+
+GitHub Actions (CI/CD)
+    ├── Trigger: Push na branch 'main'
+    ├── Build: Cria a imagem Docker do pipeline
+    └── Deploy: Faz o push para o Registry e aplica o manifesto no Kubernetes
+
+Kubernetes (Execução Diária)
+    └──▶ K8s CronJob (ex: schedule: "0 6 * * *")
+            └──▶ Instancia um Pod efêmero com a imagem do pipeline
+                  └──▶ Executa `python main.py` e o Pod é finalizado
 ```
 
 **Implementação:**
 
-1. **Cloud Composer**: Criar um ambiente Composer (Airflow gerenciado) na GCP.
-2. **DAG Airflow**: Converter `main.py` em uma DAG com tasks encadeadas via `>>`.
-3. **Secrets**: Mover `SUPABASE_DB_URL` para o Secret Manager da GCP, referenciado via `Variable.get()`.
-4. **Schedule**: `schedule_interval="0 6 * * *"` (todo dia às 6h UTC).
-5. **Alertas**: Configurar SLA com `sla=timedelta(hours=2)` e notificação via e-mail/Slack no `on_failure_callback`.
-6. **Idempotência**: O UPSERT com chave composta garante que re-execuções não dupliquem dados — essencial para retries automáticos do Airflow.
-
-**Alternativa serverless**: Cloud Functions (trigger via Cloud Scheduler) ou Cloud Run Jobs para pipelines mais leves.
-
+1. **Dockerização**: O código do pipeline (`main.py`, arquivos auxiliares e dependências) é encapsulado em uma imagem utilizando um `Dockerfile`.
+2. **Terraform**: Ele provisiona o banco de dados, o cluster Kubernetes e as regras de acesso (IAM). Após a primeira criação, ele só é executado novamente se a infraestrutura precisar mudar (ex: dar "scale up" na memória do banco ou criar um ambiente de *raw*).
+3. **GitHub Actions**: Pipeline de CI/CD automatizado. Ao detectar uma mudança no código (Python ou SQL), faz o *build* da nova imagem Docker e a entrega no K8s.
+4. **Kubernetes**: É aqui que a **execução diária** acontece de fato. O Kubernetes levanta um *Pod* com o pipeline no horário agendado, ele processa os dados e desliga em seguida.
 ---
 
 ### 2. Como garantir não-duplicidade com chaves compostas e UPSERT?
@@ -260,8 +262,8 @@ Cloud Scheduler (cron diário)
 CONSTRAINT pk_raw_escolas PRIMARY KEY (co_entidade, nu_ano_censo)
 
 -- UPSERT: insere se novo, atualiza se já existe
-INSERT INTO raw.escolas (...)
-SELECT ... FROM staging.escolas
+INSERT INTO silver.escolas (...)
+SELECT ... FROM raw.escolas
 ON CONFLICT (co_entidade, nu_ano_censo)
 DO UPDATE SET
     no_entidade = EXCLUDED.no_entidade,
@@ -282,37 +284,33 @@ DO UPDATE SET
 
 ### 3. Como garantir o consumo correto no Metabase?
 
-**Estratégia: Modelagem Dimensional (Star Schema) + Dicionário de Dados**
+**Estratégia: OBT (One Big Table) com Dicionário de Dados**
 
-Para consumo eficiente no Metabase, recomenda-se evoluir a camada `analytics` para um **Star Schema**:
+Para garantir um consumo eficiente e facilitado por usuários de negócio no Metabase, a modelagem adotada na camada `gold` foi a de **OBT (One Big Table)**. Esta abordagem consolida todas as dimensões e métricas em uma única grande tabela/view desnormalizada.
 
-```
-                    ┌─────────────┐
-                    │ dim_escola  │
-                    │ (dimensão)  │
-                    └──────┬──────┘
-                           │
-┌──────────────┐   ┌──────┴──────┐   ┌──────────────┐
-│ dim_tempo     │───│ fato_censo  │───│ dim_municipio │
-│ (ano, mês)   │   │ (métricas)  │   │ (UF, cidade) │
-└──────────────┘   └──────┬──────┘   └──────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │ dim_turma   │
-                    │ (dimensão)  │
-                    └─────────────┘
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                   vw_censo_escolar_agregado (OBT)                      │
+├──────────────────┬──────────────────┬─────────────────┬────────────────┤
+│    Dimensões     │    Dimensões     │    Métricas     │    Métricas    │
+│    Temporais     │   Geográficas    │     Gerais      │    Derivadas   │
+├──────────────────┼──────────────────┼─────────────────┼────────────────┤
+│ nu_ano_censo     │ sg_uf            │ total_escolas   │ razao_alunos_  │
+│                  │ ds_localizacao   │ total_turmas    │ turma          │
+│                  │                  │ total_matriculas│ media_turmas...│
+└──────────────────┴──────────────────┴─────────────────┴────────────────┘
 ```
 
-**Implementação prática:**
+**Por que OBT (One Big Table)?**
+- **Performance de Leitura:** Elimina a necessidade de múltiplos `JOINs` no momento da query, acelerando os relatórios do BI.
+- **Usabilidade (Self-Service BI):** O usuário de negócios encontra todas as métricas e recortes disponíveis em uma única "tabela", não precisando entender os relacionamentos de um modelo relacional clássico.
 
-1. **Dimensões**: Criar tabelas `dim_escola`, `dim_tempo`, `dim_municipio` com atributos descritivos (nomes por extenso, labels amigáveis).
-2. **Fato**: Tabela `fato_censo` com métricas numéricas (`total_alunos`, `total_turmas`) e foreign keys para as dimensões.
-3. **Dicionário de Dados**: Documentar cada campo no Metabase (Settings → Admin → Table Metadata), incluindo:
-   - Descrição humana de cada coluna
-   - Tipo semântico (category, quantity, location, etc.)
-   - Valores possíveis (ex: `TP_DEPENDENCIA: 1=Federal, 2=Estadual, 3=Municipal, 4=Privada`)
-4. **Metabase Models**: Usar a feature *Models* do Metabase para criar entidades semânticas a partir das views do `analytics`, facilitando perguntas ad-hoc por não-técnicos.
-5. **Cache**: Configurar cache do Metabase por view/question para evitar sobrecarga no banco.
+**Boas práticas para o consumo no BI:**
+
+1. **Dicionário de Dados**: Documentar a origem e a regra de negócio de cada métrica disponível na tabela, garantindo que o usuário de negócio saiba exatamente o que está analisando.
+2. **Nomenclatura Amigável**: Renomear colunas no BI para termos claros e de negócio (ex: `sg_uf` vira "Estado"), facilitando a cultura de Self-Service BI.
+3. **Criação de Filtros Globais**: Como todas as dimensões (`Ano`, `UF`, `Localização`) já estão na tabela, fica muito simples configurar painéis interativos onde o usuário filtra todo o dashboard sem necessidade de novas queries.
+4. **Ocultação de Campos Técnicos**: Esconder do usuário final os campos de controle do banco de dados (como datas de processamento e IDs sistêmicos), mantendo a interface limpa e focada apenas nas métricas.
 
 ---
 

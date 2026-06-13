@@ -45,10 +45,10 @@ INEP_DOWNLOAD_PATTERN: str = (
     "microdados_censo_escolar_{year}.zip"
 )
 
-# Schemas do banco de dados (3 camadas)
-SCHEMA_STAGING: str = "staging"
+# Schemas do banco de dados (Medallion Architecture)
 SCHEMA_RAW: str = "raw"
-SCHEMA_ANALYTICS: str = "analytics"
+SCHEMA_SILVER: str = "silver"
+SCHEMA_GOLD: str = "gold"
 
 # Colunas relevantes por tabela
 COLUNAS_ESCOLAS: list[str] = [

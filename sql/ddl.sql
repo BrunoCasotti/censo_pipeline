@@ -1,12 +1,12 @@
 -- 1. Criação dos Schemas
-CREATE SCHEMA IF NOT EXISTS staging;
 CREATE SCHEMA IF NOT EXISTS raw;
-CREATE SCHEMA IF NOT EXISTS analytics;
+CREATE SCHEMA IF NOT EXISTS silver;
+CREATE SCHEMA IF NOT EXISTS gold;
 
--- 2. Tabelas STAGING (dados temporários)
+-- 2. Tabelas RAW (dados temporários)
 
-DROP TABLE IF EXISTS staging.escolas CASCADE;
-CREATE TABLE staging.escolas (
+DROP TABLE IF EXISTS raw.escolas CASCADE;
+CREATE TABLE raw.escolas (
     nu_ano_censo        TEXT,
     co_entidade         TEXT,
     no_entidade         TEXT,
@@ -32,8 +32,8 @@ CREATE TABLE staging.escolas (
     _loaded_at          TIMESTAMP DEFAULT NOW()
 );
 
-DROP TABLE IF EXISTS staging.turmas CASCADE;
-CREATE TABLE staging.turmas (
+DROP TABLE IF EXISTS raw.turmas CASCADE;
+CREATE TABLE raw.turmas (
     nu_ano_censo        TEXT,
     co_entidade         TEXT,
     qt_tur_bas          TEXT,
@@ -45,8 +45,8 @@ CREATE TABLE staging.turmas (
     _loaded_at          TIMESTAMP DEFAULT NOW()
 );
 
-DROP TABLE IF EXISTS staging.matriculas CASCADE;
-CREATE TABLE staging.matriculas (
+DROP TABLE IF EXISTS raw.matriculas CASCADE;
+CREATE TABLE raw.matriculas (
     nu_ano_censo        TEXT,
     co_entidade         TEXT,
     qt_mat_bas          TEXT,
@@ -58,10 +58,10 @@ CREATE TABLE staging.matriculas (
     _loaded_at          TIMESTAMP DEFAULT NOW()
 );
 
--- 3. Tabelas RAW (dados históricos tipados)
+-- 3. Tabelas SILVER (dados históricos tipados)
 
-DROP TABLE IF EXISTS raw.escolas CASCADE;
-CREATE TABLE raw.escolas (
+DROP TABLE IF EXISTS silver.escolas CASCADE;
+CREATE TABLE silver.escolas (
     nu_ano_censo        INTEGER     NOT NULL,
     co_entidade         BIGINT      NOT NULL,
     no_entidade         VARCHAR(200),
@@ -85,11 +85,11 @@ CREATE TABLE raw.escolas (
     in_acessibilidade_vao_livre SMALLINT,
     in_acessibilidade_sinalizacao_tatil SMALLINT,
     _loaded_at          TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT pk_raw_escolas PRIMARY KEY (co_entidade, nu_ano_censo)
+    CONSTRAINT pk_silver_escolas PRIMARY KEY (co_entidade, nu_ano_censo)
 );
 
-DROP TABLE IF EXISTS raw.turmas CASCADE;
-CREATE TABLE IF NOT EXISTS raw.turmas (
+DROP TABLE IF EXISTS silver.turmas CASCADE;
+CREATE TABLE IF NOT EXISTS silver.turmas (
     nu_ano_censo INTEGER,
     co_entidade BIGINT,
     qt_tur_bas INTEGER,
@@ -99,12 +99,12 @@ CREATE TABLE IF NOT EXISTS raw.turmas (
     qt_tur_prof INTEGER,
     qt_tur_eja INTEGER,
     _loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT pk_raw_turmas PRIMARY KEY (co_entidade, nu_ano_censo)
+    CONSTRAINT pk_silver_turmas PRIMARY KEY (co_entidade, nu_ano_censo)
 );
 
 
-DROP TABLE IF EXISTS raw.matriculas CASCADE;
-CREATE TABLE IF NOT EXISTS raw.matriculas (
+DROP TABLE IF EXISTS silver.matriculas CASCADE;
+CREATE TABLE IF NOT EXISTS silver.matriculas (
     nu_ano_censo INTEGER,
     co_entidade BIGINT,
     qt_mat_bas INTEGER,
@@ -114,20 +114,20 @@ CREATE TABLE IF NOT EXISTS raw.matriculas (
     qt_mat_prof INTEGER,
     qt_mat_eja INTEGER,
     _loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT pk_raw_matriculas PRIMARY KEY (co_entidade, nu_ano_censo)
+    CONSTRAINT pk_silver_matriculas PRIMARY KEY (co_entidade, nu_ano_censo)
 );
 
 -- 4. Índices para performance nas queries analíticas
-CREATE INDEX IF NOT EXISTS idx_raw_escolas_uf
-    ON raw.escolas (sg_uf);
+CREATE INDEX IF NOT EXISTS idx_silver_escolas_uf
+    ON silver.escolas (sg_uf);
 
-CREATE INDEX IF NOT EXISTS idx_raw_escolas_dependencia
-    ON raw.escolas (tp_dependencia);
+CREATE INDEX IF NOT EXISTS idx_silver_escolas_dependencia
+    ON silver.escolas (tp_dependencia);
 
-CREATE INDEX IF NOT EXISTS idx_raw_turmas_entidade_ano
-    ON raw.turmas (co_entidade, nu_ano_censo);
+CREATE INDEX IF NOT EXISTS idx_silver_turmas_entidade_ano
+    ON silver.turmas (co_entidade, nu_ano_censo);
 
-CREATE INDEX IF NOT EXISTS idx_raw_matriculas_entidade_ano
-    ON raw.matriculas (co_entidade, nu_ano_censo);
+CREATE INDEX IF NOT EXISTS idx_silver_matriculas_entidade_ano
+    ON silver.matriculas (co_entidade, nu_ano_censo);
 
 

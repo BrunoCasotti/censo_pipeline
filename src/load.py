@@ -1,7 +1,7 @@
 # =============================================================================
-# src/load.py — Carga de dados: CSV → Staging → Raw (UPSERT)
+# src/load.py — Carga de dados: CSV → Raw → Silver (UPSERT)
 # =============================================================================
-"""Carga de dados: CSV → Staging → Raw (UPSERT) em chunks."""
+"""Carga de dados: CSV → Raw → Silver (UPSERT) em chunks."""
 
 import gc
 
@@ -15,8 +15,8 @@ from src.config import (
     COLUNAS_ESCOLAS,
     COLUNAS_MATRICULAS,
     COLUNAS_TURMAS,
+    SCHEMA_SILVER,
     SCHEMA_RAW,
-    SCHEMA_STAGING,
     TARGET_UF,
     get_engine,
     logger,
@@ -25,22 +25,22 @@ from src.config import (
 # Mapeamento das tabelas e suas configurações
 TABLE_CONFIG: dict[str, dict] = {
     "escolas": {
-        "staging_table": f"{SCHEMA_STAGING}.escolas",
         "raw_table": f"{SCHEMA_RAW}.escolas",
+        "silver_table": f"{SCHEMA_SILVER}.escolas",
         "columns": COLUNAS_ESCOLAS,
         "conflict_key": "(co_entidade, nu_ano_censo)",
         "conflict_columns": ["co_entidade", "nu_ano_censo"],
     },
     "turmas": {
-        "staging_table": f"{SCHEMA_STAGING}.turmas",
         "raw_table": f"{SCHEMA_RAW}.turmas",
+        "silver_table": f"{SCHEMA_SILVER}.turmas",
         "columns": COLUNAS_TURMAS,
         "conflict_key": "(co_entidade, nu_ano_censo)",
         "conflict_columns": ["co_entidade", "nu_ano_censo"],
     },
     "matriculas": {
-        "staging_table": f"{SCHEMA_STAGING}.matriculas",
         "raw_table": f"{SCHEMA_RAW}.matriculas",
+        "silver_table": f"{SCHEMA_SILVER}.matriculas",
         "columns": COLUNAS_MATRICULAS,
         "conflict_key": "(co_entidade, nu_ano_censo)",
         "conflict_columns": ["co_entidade", "nu_ano_censo"],
@@ -48,17 +48,17 @@ TABLE_CONFIG: dict[str, dict] = {
 }
 
 
-# Funções de Carga na Staging
+# Funções de Carga na Raw
 
-def _truncate_staging(engine) -> None:
-    """Limpa todas as tabelas de staging antes da ingestão."""
-    logger.info("🗑️  Truncando tabelas de staging...")
+def _truncate_raw(engine) -> None:
+    """Limpa todas as tabelas de raw antes da ingestão."""
+    logger.info("🗑️  Truncando tabelas de raw...")
     with engine.connect() as conn:
         for table_name, config in TABLE_CONFIG.items():
-            conn.execute(text(f"TRUNCATE TABLE {config['staging_table']} CASCADE"))
-            logger.debug(f"   TRUNCATE {config['staging_table']}")
+            conn.execute(text(f"TRUNCATE TABLE {config['raw_table']} CASCADE"))
+            logger.debug(f"   TRUNCATE {config['raw_table']}")
         conn.commit()
-    logger.info("   Staging limpa.")
+    logger.info("   Raw limpa.")
 
 
 def _filter_columns(df: pd.DataFrame, desired_columns: list[str]) -> pd.DataFrame:
@@ -79,14 +79,14 @@ def _filter_columns(df: pd.DataFrame, desired_columns: list[str]) -> pd.DataFram
     return df[available]
 
 
-def _load_csv_to_staging(
+def _load_csv_to_raw(
     csv_path: str,
     table_name: str,
     config: dict,
     engine,
 ) -> int:
     """
-    Carrega um CSV na tabela de staging em chunks.
+    Carrega um CSV na tabela de raw em chunks.
 
     Args:
         csv_path: Caminho do arquivo CSV.
@@ -95,7 +95,7 @@ def _load_csv_to_staging(
         engine: SQLAlchemy engine.
 
     Returns:
-        Total de registros inseridos na staging.
+        Total de registros inseridos na raw.
     """
     logger.info(f"📂 Carregando {table_name} de: {csv_path}")
 
@@ -108,12 +108,12 @@ def _load_csv_to_staging(
         sep=CSV_SEPARATOR,
         encoding=CSV_ENCODING,
         chunksize=CHUNK_SIZE,
-        dtype=str,       # Tudo como string na staging
+        dtype=str,       # Tudo como string na raw
         on_bad_lines="skip",  # Ignora linhas mal-formatadas
         low_memory=False,
     )
 
-    schema_name, raw_table_name = config["staging_table"].split(".")
+    schema_name, raw_table_name = config["raw_table"].split(".")
 
     for chunk in reader:
         chunk_num += 1
@@ -139,7 +139,7 @@ def _load_csv_to_staging(
         # Normaliza nomes para lowercase (padrão PostgreSQL)
         chunk.columns = chunk.columns.str.lower()
 
-        # Insere na staging
+        # Insere na raw
         chunk.to_sql(
             name=raw_table_name,
             schema=schema_name,
@@ -164,7 +164,7 @@ def _load_csv_to_staging(
         gc.collect()
 
     logger.info(
-        f"   ✅ {table_name}: {total_rows:,} registros carregados na staging "
+        f"   ✅ {table_name}: {total_rows:,} registros carregados na raw "
         f"({chunk_num} chunks processados)"
     )
     return total_rows
@@ -206,18 +206,18 @@ CAST_TYPES: dict[str, str] = {
 }
 
 
-# UPSERT: Staging → Raw
+# UPSERT: Raw → Silver
 
 def _build_upsert_sql(table_name: str, config: dict) -> str:
     """
     Constrói a query de UPSERT (INSERT ... ON CONFLICT ... DO UPDATE).
 
     Usa chave composta para garantir não-duplicidade.
-    Inclui CAST explícito para converter TEXT da staging para tipos da raw,
+    Inclui CAST explícito para converter TEXT da raw para tipos da silver,
     usando NULLIF para tratar strings vazias.
     """
-    staging = config["staging_table"]
     raw = config["raw_table"]
+    silver = config["silver_table"]
     conflict = config["conflict_key"]
 
     # Colunas de destino
@@ -240,9 +240,9 @@ def _build_upsert_sql(table_name: str, config: dict) -> str:
     set_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
 
     sql = f"""
-    INSERT INTO {raw} ({col_str})
+    INSERT INTO {silver} ({col_str})
     SELECT {select_str}
-    FROM {staging}
+    FROM {raw}
     ON CONFLICT {conflict}
     DO UPDATE SET
         {set_clause},
@@ -252,14 +252,14 @@ def _build_upsert_sql(table_name: str, config: dict) -> str:
     return sql
 
 
-def _upsert_staging_to_raw(engine) -> dict[str, int]:
+def _upsert_raw_to_silver(engine) -> dict[str, int]:
     """
-    Executa UPSERT de todas as tabelas: staging → raw.
+    Executa UPSERT de todas as tabelas: raw → silver.
 
     Returns:
         Dict com contagem de registros afetados por tabela.
     """
-    logger.info("🔄 Executando UPSERT: staging → raw...")
+    logger.info("🔄 Executando UPSERT: raw → silver...")
     counts: dict[str, int] = {}
 
     with engine.connect() as conn:
@@ -270,7 +270,7 @@ def _upsert_staging_to_raw(engine) -> dict[str, int]:
             result = conn.execute(text(sql))
             row_count = result.rowcount
             counts[table_name] = row_count
-            logger.info(f"   ✅ {table_name}: {row_count:,} registros no raw")
+            logger.info(f"   ✅ {table_name}: {row_count:,} registros no silver")
 
         conn.commit()
 
@@ -283,9 +283,9 @@ def _upsert_staging_to_raw(engine) -> dict[str, int]:
 def run(csv_paths: dict[str, str]) -> dict[str, dict[str, int]]:
     """
     Executa o pipeline completo de carga:
-    1. Trunca staging
-    2. Carrega CSVs na staging (em chunks, filtrado por SP)
-    3. UPSERT staging → raw
+    1. Trunca raw
+    2. Carrega CSVs na raw (em chunks, filtrado por SP)
+    3. UPSERT raw → silver
 
     Args:
         csv_paths: Dict {'escolas': path, 'turmas': path, 'matriculas': path}
@@ -294,30 +294,30 @@ def run(csv_paths: dict[str, str]) -> dict[str, dict[str, int]]:
         Dict com estatísticas de carga por tabela.
     """
     logger.info("=" * 60)
-    logger.info("ETAPA: CARGA DE DADOS (CSV → Staging → Raw)")
+    logger.info("ETAPA: CARGA DE DADOS (CSV → Raw → Silver)")
     logger.info("=" * 60)
 
     engine = get_engine()
     stats: dict[str, dict[str, int]] = {}
 
-    # 1. Trunca staging
-    _truncate_staging(engine)
+    # 1. Trunca raw
+    _truncate_raw(engine)
 
-    # 2. Carrega cada CSV na staging
+    # 2. Carrega cada CSV na raw
     for table_name, csv_path in csv_paths.items():
         if table_name not in TABLE_CONFIG:
             logger.warning(f"⚠️  Tabela desconhecida: {table_name}. Ignorando.")
             continue
 
         config = TABLE_CONFIG[table_name]
-        staging_count = _load_csv_to_staging(csv_path, table_name, config, engine)
-        stats[table_name] = {"staging": staging_count}
+        raw_count = _load_csv_to_raw(csv_path, table_name, config, engine)
+        stats[table_name] = {"raw": raw_count}
 
-    # 3. UPSERT staging → raw
-    upsert_counts = _upsert_staging_to_raw(engine)
+    # 3. UPSERT raw → silver
+    upsert_counts = _upsert_raw_to_silver(engine)
     for table_name, count in upsert_counts.items():
         if table_name in stats:
-            stats[table_name]["raw"] = count
+            stats[table_name]["silver"] = count
 
     logger.info("✅ Carga concluída.")
     logger.info(f"   Estatísticas: {stats}")

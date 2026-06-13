@@ -1,5 +1,5 @@
 -- View Mestra: Censo Escolar Agregado (Wide Table)
-CREATE OR REPLACE VIEW analytics.vw_censo_escolar_agregado AS
+CREATE OR REPLACE VIEW gold.vw_censo_escolar_agregado AS
 SELECT
     e.nu_ano_censo,
     e.sg_uf,
@@ -44,10 +44,10 @@ SELECT
     ROUND(SUM(m.qt_mat_bas)::NUMERIC / NULLIF(COUNT(DISTINCT e.co_entidade), 0), 2) AS media_alunos_escola,
     ROUND(SUM(m.qt_mat_bas)::NUMERIC / NULLIF(SUM(t.qt_tur_bas), 0), 2) AS razao_alunos_turma
 
-FROM raw.escolas e
-LEFT JOIN raw.turmas t 
+FROM silver.escolas e
+LEFT JOIN silver.turmas t 
     ON e.co_entidade = t.co_entidade AND e.nu_ano_censo = t.nu_ano_censo
-LEFT JOIN raw.matriculas m 
+LEFT JOIN silver.matriculas m 
     ON e.co_entidade = m.co_entidade AND e.nu_ano_censo = m.nu_ano_censo
 -- Filtro para trazer apenas escolas em funcionamento (status = Em Atividade)
 WHERE e.tp_situacao_funcionamento = 1
