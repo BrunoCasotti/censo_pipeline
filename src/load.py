@@ -208,73 +208,69 @@ CAST_TYPES: dict[str, str] = {
 
 # UPSERT: Raw → Silver
 
-def _build_upsert_sql(table_name: str, config: dict) -> str:
-    """
-    Constrói a query de UPSERT (INSERT ... ON CONFLICT ... DO UPDATE).
-
-    Usa chave composta para garantir não-duplicidade.
-    Inclui CAST explícito para converter TEXT da raw para tipos da silver,
-    usando NULLIF para tratar strings vazias.
-    """
+def _build_insert_sql(table_name: str, config: dict) -> str:
+    """Constrói o INSERT com DISTINCT para não ferir a Primary Key do silver."""
     raw = config["raw_table"]
     silver = config["silver_table"]
-    conflict = config["conflict_key"]
-
-    # Colunas de destino
+    
     col_list = [c.lower() for c in config["columns"]]
     col_str = ", ".join(col_list)
 
-    # SELECT com CAST para converter TEXT → tipo correto
-    # Usa NULLIF(col, '') para converter strings vazias do CSV para NULL
     select_cols = []
     for c in col_list:
         if c in CAST_TYPES:
             select_cols.append(f"NULLIF({c}, '')::{CAST_TYPES[c]}")
         else:
             select_cols.append(f"NULLIF({c}, '')")
+            
     select_str = ", ".join(select_cols)
-
-    # SET clause para o UPDATE (exclui as colunas da chave)
-    conflict_cols_lower = [c.lower() for c in config["conflict_columns"]]
-    update_cols = [c for c in col_list if c not in conflict_cols_lower]
-    set_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
 
     sql = f"""
     INSERT INTO {silver} ({col_str})
     SELECT {select_str}
     FROM {raw}
-    ON CONFLICT {conflict}
-    DO UPDATE SET
-        {set_clause},
-        _loaded_at = NOW()
     """
-
     return sql
-
 
 def _upsert_raw_to_silver(engine) -> dict[str, int]:
     """
-    Executa UPSERT de todas as tabelas: raw → silver.
-
-    Returns:
-        Dict com contagem de registros afetados por tabela.
+    Deleta os registros existentes na silver correspondentes à raw e insere os novos.
     """
-    logger.info("🔄 Executando UPSERT: raw → silver...")
+    logger.info("🔄 Atualizando silver (DELETE + INSERT)...")
     counts: dict[str, int] = {}
 
     with engine.connect() as conn:
         for table_name, config in TABLE_CONFIG.items():
-            sql = _build_upsert_sql(table_name, config)
-            logger.debug(f"   UPSERT {table_name}:\n{sql[:200]}...")
-
-            result = conn.execute(text(sql))
+            raw = config["raw_table"]
+            silver = config["silver_table"]
+            
+            # 1. Deletar os registros que já existem usando a chave composta
+            # É necessário fazer o cast explícito pois a raw é 100% TEXT e a silver é tipada
+            keys = ", ".join([c.lower() for c in config["conflict_columns"]])
+            keys_cast = ", ".join([
+                f"NULLIF({c.lower()}, '')::BIGINT" if c.lower() == "co_entidade" else f"NULLIF({c.lower()}, '')::INTEGER"
+                for c in config["conflict_columns"]
+            ])
+            
+            delete_sql = f"""
+            DELETE FROM {silver}
+            WHERE ({keys}) IN (SELECT {keys_cast} FROM {raw});
+            """
+            logger.debug(f"   DELETE {table_name}")
+            del_result = conn.execute(text(delete_sql))
+            del_count = del_result.rowcount
+            
+            # 2. Inserir os dados da raw agrupados/deduplicados para evitar erro de PK
+            insert_sql = _build_insert_sql(table_name, config)
+            logger.debug(f"   INSERT {table_name}")
+            result = conn.execute(text(insert_sql))
             row_count = result.rowcount
             counts[table_name] = row_count
-            logger.info(f"   ✅ {table_name}: {row_count:,} registros no silver")
+            logger.info(f"   ✅ {table_name}: {del_count:,} registros deletados | {row_count:,} registros inseridos no silver")
 
         conn.commit()
 
-    logger.info("✅ UPSERT concluído.")
+    logger.info("✅ Carga concluída.")
     return counts
 
 

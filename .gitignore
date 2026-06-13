@@ -116,3 +116,4 @@ tmp/
 *.csv
 *.parquet
 *.db
+dashboard_arco.html

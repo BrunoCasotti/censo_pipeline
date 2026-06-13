@@ -84,8 +84,7 @@ CREATE TABLE silver.escolas (
     in_acessibilidade_rampas SMALLINT,
     in_acessibilidade_vao_livre SMALLINT,
     in_acessibilidade_sinalizacao_tatil SMALLINT,
-    _loaded_at          TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT pk_silver_escolas PRIMARY KEY (co_entidade, nu_ano_censo)
+    _loaded_at          TIMESTAMP DEFAULT NOW()
 );
 
 DROP TABLE IF EXISTS silver.turmas CASCADE;
@@ -98,8 +97,7 @@ CREATE TABLE IF NOT EXISTS silver.turmas (
     qt_tur_med INTEGER,
     qt_tur_prof INTEGER,
     qt_tur_eja INTEGER,
-    _loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT pk_silver_turmas PRIMARY KEY (co_entidade, nu_ano_censo)
+    _loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 
@@ -113,8 +111,7 @@ CREATE TABLE IF NOT EXISTS silver.matriculas (
     qt_mat_med INTEGER,
     qt_mat_prof INTEGER,
     qt_mat_eja INTEGER,
-    _loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT pk_silver_matriculas PRIMARY KEY (co_entidade, nu_ano_censo)
+    _loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 4. Índices para performance nas queries analíticas

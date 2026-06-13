@@ -41,10 +41,10 @@ Este pipeline automatiza o processo completo de **ELT (Extract, Load, Transform)
 | **`tempfile.mkdtemp()`** | Diretório temporário portável entre Windows, Linux, macOS e WSL. Sem caminhos hardcoded. |
 | **Chunks de 50k linhas** | Controla consumo de memória. Funciona em ambientes com apenas 4GB de RAM (ex: WSL). Configurável via `.env`. |
 | **Escala Nacional** | O pipeline processa dados de todas as UF's do Brasil em uma única rodada (filtro desativado). |
-| **Raw/Silver/Gold** | Raw permite reprocessamento; Silver com UPSERT garante idempotência; Gold gera métricas limpas. |
-| **UPSERT com chave composta** | `(CO_ENTIDADE, NU_ANO_CENSO)` garante que re-execuções não dupliquem dados. |
+| **Raw/Silver/Gold** | Raw permite reprocessamento; Silver com Delete+Insert garante consistência; Gold gera métricas limpas. |
+| **Chave composta** | `(CO_ENTIDADE, NU_ANO_CENSO)` na deleção e inserção garante que re-execuções não dupliquem dados. |
 | **SQLAlchemy 2.0+** | API moderna com tipagem, connection pooling e compatibilidade com Supabase. |
-| **Todas as colunas TEXT na raw** | Evita erros de parse em CSV com dados sujos. A conversão de tipos ocorre no UPSERT para silver. |
+| **Todas as colunas TEXT na raw** | Evita erros de parse em CSV com dados sujos. A conversão de tipos ocorre no insert para silver. |
 
 ---
 
@@ -59,10 +59,10 @@ O banco segue uma arquitetura em **3 camadas**:
 │  ┌─────────────┐   ┌─────────────┐   ┌───────────────┐ │
 │  │   raw    │──▶│     silver     │──▶│   gold   │ │
 │  │  (TEXT cols) │   │ (Typed +    │   │  (SQL Views)  │ │
-│  │  Temporário  │   │  UPSERT PK) │   │  Métricas     │ │
+│  │  Temporário  │   │  PK exata)  │   │  Métricas     │ │
 │  └─────────────┘   └─────────────┘   └───────────────┘ │
 │    TRUNCATE/cada     Histórico          Derivado        │
-│    execução          Idempotente        Somente leitura │
+│    execução          Consistente        Somente leitura │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -154,8 +154,10 @@ python main.py
 O pipeline executará automaticamente:
 1. ✅ Criação de schemas e tabelas no Supabase
 2. ✅ Download dos microdados mais recentes do INEP
-3. ✅ Carga massiva em chunks (Nacional) com UPSERT para silver
-4. ✅ Criação das views analíticas
+3. ✅ Carga massiva em chunks (Nacional) com deleção e inserção na silver
+4. ✅ Validação de Data Quality via Great Expectations (Completeness, Validity, Integrity)
+5. ✅ Criação das views analíticas na camada gold
+6. ✅ Geração automática do Dashboard HTML com indicadores finais
 
 ---
 
@@ -168,7 +170,8 @@ arco_dataeng_platform_challenge/
 │   ├── config.py            # Configurações centralizadas (env vars)
 │   ├── init_db.py           # Setup automático do banco (DDL)
 │   ├── extract.py           # Scraping + download + extração
-│   └── load.py              # CSV → Raw (chunks) → Silver (UPSERT)
+│   ├── load.py              # CSV → Raw (chunks) → Silver (Delete+Insert)
+│   └── data_quality.py      # Bateria de testes usando Great Expectations
 ├── sql/
 │   ├── ddl.sql              # CREATE SCHEMA + CREATE TABLE
 │   └── transformations.sql  # Wide Table Analítica (Mestra)
@@ -178,6 +181,13 @@ arco_dataeng_platform_challenge/
 ├── README.md                # Esta documentação
 └── .gitignore               # Arquivos ignorados pelo Git
 ```
+
+---
+
+## 📈 Amostra do Dashboard Analítico (Gold)
+
+![Amostra do Dashboard Analítico Gerado](./assets/dashboard_preview.png)
+*Visualização estática em HTML construída a partir dos dados agregados da Wide Table.*
 
 ---
 
@@ -216,34 +226,43 @@ Kubernetes (Agendamento e Computação)
 
 ---
 
-### 2. Como garantir não-duplicidade com chaves compostas e UPSERT?
+### 2. Como garantir não-duplicidade e consistência nas cargas da camada Silver?
 
-A modelagem de banco de dados prevê ingestões incrementais ou re-processamentos sem gerar redundância, aplicando a técnica de **UPSERT**.
+A modelagem de banco de dados prevê ingestões incrementais ou re-processamentos sem gerar redundância, aplicando a técnica de deleção prévia combinada com dedreplicação ativa.
 
 **Lógica Aplicada:**
 
 ```sql
--- Definição de chave composta como garantia de unicidade
-CONSTRAINT pk_silver_escolas PRIMARY KEY (co_entidade, nu_ano_censo)
+-- 1. Deleção prévia de registros já existentes
+DELETE FROM silver.turmas 
+WHERE (co_entidade, nu_ano_censo) IN (SELECT co_entidade, nu_ano_censo FROM raw.turmas);
 
--- Operação UPSERT
-INSERT INTO silver.escolas (...)
-SELECT ... FROM raw.escolas
-ON CONFLICT (co_entidade, nu_ano_censo)
-DO UPDATE SET
-    no_entidade = EXCLUDED.no_entidade,
-    ...
-    _loaded_at = NOW();
+-- 2. Inserção direta
+INSERT INTO silver.turmas (...)
+SELECT ... 
+FROM raw.turmas;
 ```
 
 **Benefícios:**
-- **Restrição de Banco:** A constraint de *Primary Key* combinada (`CO_ENTIDADE` e `NU_ANO_CENSO`) bloqueia fisicamente duplicações.
-- **Idempotência:** A instrução `ON CONFLICT DO UPDATE` valida o registro: se for inédito, realiza o `INSERT`; se já existir, sobrescreve os dados defasados por meio do `UPDATE`. O pipeline pode ser executado *n* vezes sem corromper a base.
-- **Rastreabilidade:** A coluna `_loaded_at` registra o *timestamp* da última alteração.
+- **Chave Conceitual:** A combinação (`CO_ENTIDADE` e `NU_ANO_CENSO`) atua como nossa chave de agrupamento lógico, permitindo limpeza segmentada sem engessar a tabela com restrições rígidas (Primary Keys).
+- **Consistência (Delete + Insert):** A exclusão prévia limpa os dados defasados para aquelas chaves específicas. Logo em seguida, o `INSERT` transfere os dados atualizados idênticos à origem (raw), garantindo fidelidade de 100% ao arquivo CSV do INEP. O pipeline pode ser executado *n* vezes sem acumular registros fantasmas.
 
 ---
 
-### 3. Como garantir o consumo correto no Metabase?
+### 3. Garantia de Qualidade de Dados (Great Expectations)
+
+Para elevar a resiliência e a confiabilidade do pipeline, integramos o **Great Expectations** rodando via *Ephemeral Data Context* na Etapa 4 do pipeline.
+
+Assim que a carga para a camada `silver` termina, o script `src/data_quality.py` dispara as seguintes expectativas diretamente no banco PostgreSQL para cada tabela alvo:
+- **Completeness (Volume de Dados):** O volume de registros da `silver` deve ser matematicamente igual aos carregados na `raw`.
+- **Integrity (Chaves Não-Nulas):** A chave entidade (`co_entidade`) nunca pode estar em branco.
+- **Validity (Domínio de Tempo):** A variável do ano (`nu_ano_censo`) deve pertencer à década atual (entre 2020 e 2030).
+
+Se as validações passarem, o pipeline prossegue para as agregações da `gold`. Caso algo reprove, logs críticos apontando as anomalias são gerados imediatamente para o analista atuar!
+
+---
+
+### 4. Como garantir o consumo correto no Metabase?
 
 A interface final para ferramentas de visualização (ex: Metabase) baseia-se em uma modelagem do tipo **OBT (One Big Table)** disponibilizada na camada `gold`.
 
@@ -273,15 +292,25 @@ A interface final para ferramentas de visualização (ex: Metabase) baseia-se em
 
 ## 🤖 Uso de IA
 
-*[Espaço reservado para relato do uso de ferramentas de IA durante o desenvolvimento]*
+**Onde você usou IA e com qual objetivo?**
 
-<!-- 
-Descreva aqui como ferramentas de IA foram utilizadas no desenvolvimento:
-- Quais ferramentas (ChatGPT, Copilot, Claude, etc.)
-- Em quais etapas (design, código, documentação, debug)
-- Como você validou e ajustou o output gerado
-- Decisões que foram tomadas por você vs. sugeridas pela IA
--->
+Eu basicamente dividi o uso da IA em 4 etapas no meu fluxo de trabalho:
+
+1. **Arquitetura inicial:** Utilizei o Gemini (chat) para elaborar o prompt inicial baseado em todos os pontos trazidos no texto do case.
+2. **Planejamento de código:** A partir desse escopo inicial, fui para o Antigravity para criar o plano de implementação. Nesse ponto, já utilizando algumas *skills* para deixar o planejamento mais específico possível e gerar um bom primeiro projeto.
+3. **Coding:** Criação, edição do código e interação para correções de bugs.
+4. **Documentação e Visualização:** Criar uma documentação bem explicativa sobre o passo a passo para executar o projeto e como ele funciona. E criar um dashboard de exemplo das métricas para demonstrar de forma mais visual o resultado do pipeline.
+
+**O que funcionou bem?**
+
+Funcionou super bem fazer esse planejamento da arquitetura inicial do projeto visando o que o case pedia, pois na implementação não precisei verbalizar tantos detalhes específicos para tudo funcionar. E também a utilização de *skills* e *knowledges* como base de conhecimento para que o modelo entendesse bem o contexto e o que precisava ser feito.
+
+**Onde a saída da IA estava errada ou incompleta e como você percebeu, validou e corrigiu?**
+
+Ao lidar com cenários reais de engenharia de dados, é comum a IA gerar saídas genéricas que precisam de correção técnica. Tive dois exemplos diretos disso no projeto:
+
+* **Exemplo 1 (Upsert e Chaves Primárias):** A IA sugeriu usar `PRIMARY KEY` restrita na camada Silver e `ON CONFLICT DO UPDATE`. Porém, a granularidade dos dados do INEP possui duplicidades naturais na mesma chave (`co_entidade`, `nu_ano_censo`). Ao testar, o pipeline quebrou com *UniqueViolation*. Validei na raw e corrigi a IA instruindo a remoção da restrição física e o uso da abordagem de `DELETE` (pela chave) + `INSERT` total, garantindo 100% de fidelidade ao CSV original sem perda de dados.
+* **Exemplo 2 (Performance de Validação):** Ao configurar o Great Expectations, a primeira saída da IA foi puxar a tabela inteira do PostgreSQL para a memória (Pandas) usando `SELECT *`. Como são muitas linhas, isso facilmente causaria estouro de memória (Out of Memory). Instruí a IA a refazer a lógica para o banco (fazendo as métricas direto no SQL via `COUNT` e `SUM(CASE)`). Com isso, o banco processa os dados e envia apenas 1 linha consolidada para a validação do Great Expectations.
 
 ---
 

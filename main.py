@@ -19,7 +19,8 @@ def main() -> None:
 
     # Importações dentro da função para garantir que o .env já foi carregado
     from src.config import get_engine, logger
-    from src import init_db, extract, load
+    from src import init_db, extract, load, data_quality
+    from src.dashboard import generate_dashboard
 
     start_time = time.time()
 
@@ -34,25 +35,35 @@ def main() -> None:
 
     try:
         # ETAPA 1: Setup do Banco de Dados
-        logger.info("▶ ETAPA 1/4: Setup do banco de dados...")
+        logger.info("▶ ETAPA 1/6: Setup do banco de dados...")
         init_db.setup()
         logger.info("")
 
         # ETAPA 2: Extração dos Microdados
-        logger.info("▶ ETAPA 2/4: Extração dos microdados do INEP...")
+        logger.info("▶ ETAPA 2/6: Extração dos microdados do INEP...")
         csv_paths, temp_dir, year = extract.run()
         logger.info(f"   Ano do Censo: {year}")
         logger.info(f"   Arquivos extraídos: {list(csv_paths.keys())}")
         logger.info("")
 
         # ETAPA 3: Carga de Dados
-        logger.info("▶ ETAPA 3/4: Carga de dados...")
+        logger.info("▶ ETAPA 3/6: Carga de dados...")
         stats = load.run(csv_paths)
         logger.info("")
 
-        # ETAPA 4: Transformações SQL
-        logger.info("▶ ETAPA 4/4: Criando views analíticas...")
+        # ETAPA 4: Data Quality Validation
+        logger.info("▶ ETAPA 4/6: Validação de Qualidade de Dados (Great Expectations)...")
+        data_quality.run(stats)
+        logger.info("")
+
+        # ETAPA 5: Transformações SQL
+        logger.info("▶ ETAPA 5/6: Criando views analíticas...")
         _run_transformations(get_engine(), logger)
+        logger.info("")
+
+        # ETAPA 6: Geração do Dashboard HTML
+        logger.info("▶ ETAPA 6/6: Gerando Dashboard HTML...")
+        generate_dashboard()
         logger.info("")
 
     except KeyboardInterrupt:

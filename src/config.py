@@ -19,6 +19,9 @@ LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger("censo_escolar")
 
+# Suprime os logs de inicialização ruidosos do Great Expectations
+logging.getLogger("great_expectations").setLevel(logging.WARNING)
+
 # Banco de Dados
 SUPABASE_DB_URL: str = os.getenv("SUPABASE_DB_URL", "")
 if not SUPABASE_DB_URL:
