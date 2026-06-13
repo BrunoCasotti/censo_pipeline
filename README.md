@@ -41,7 +41,7 @@ Este pipeline automatiza o processo completo de **ELT (Extract, Load, Transform)
 | **`tempfile.mkdtemp()`** | Diretório temporário portável entre Windows, Linux, macOS e WSL. Sem caminhos hardcoded. |
 | **Chunks de 50k linhas** | Controla consumo de memória. Funciona em ambientes com apenas 4GB de RAM (ex: WSL). Configurável via `.env`. |
 | **Escala Nacional** | O pipeline processa dados de todas as UF's do Brasil em uma única rodada (filtro desativado). |
-| **Raw + Silver (3 camadas)** | Raw permite reprocessamento; Silver com UPSERT garante idempotência; Gold gera métricas limpas. |
+| **Raw/Silver/Gold** | Raw permite reprocessamento; Silver com UPSERT garante idempotência; Gold gera métricas limpas. |
 | **UPSERT com chave composta** | `(CO_ENTIDADE, NU_ANO_CENSO)` garante que re-execuções não dupliquem dados. |
 | **SQLAlchemy 2.0+** | API moderna com tipagem, connection pooling e compatibilidade com Supabase. |
 | **Todas as colunas TEXT na raw** | Evita erros de parse em CSV com dados sujos. A conversão de tipos ocorre no UPSERT para silver. |
@@ -181,87 +181,52 @@ arco_dataeng_platform_challenge/
 
 ---
 
-## 📈 Métricas Geradas
-
-O pipeline consolida todos os dados do país em uma única **Wide Table** (View Mestra) no schema `gold`:
-
-| View | Descrição |
-|---|---|
-| `vw_censo_escolar_agregado` | Consolida agrupamentos por Ano, UF, Dependência Administrativa e Localização. Calcula totais, % de infraestrutura exigidas, médias e razões bônus (como escolas conectadas e alunos/turma). |
-
-### Amostra Visual no Terminal
-
-Ao final do pipeline, o Python automaticamente puxa os **Top 3 resultados** do banco e imprime na tela. Exemplo de saída:
-
-```text
-📊 AMOSTRA DOS DADOS ANALÍTICOS (TOP 3):
-
-🏆 RANK 1 ---
-  nu_ano_censo             : 2025
-  sg_uf                    : SP
-  ds_dependencia           : Estadual
-  ds_localizacao           : Urbana
-  total_escolas            : 5320
-  total_turmas             : 145890
-  total_matriculas         : 4580000
-  pct_com_internet         : 99.80
-  pct_com_banda_larga      : 98.50
-  pct_com_agua_potavel     : 100.00
-  pct_com_energia          : 99.90
-  pct_com_acessibilidade   : 75.40
-  pct_escolas_conectadas   : 98.40
-  media_turmas_escola      : 27.42
-  media_alunos_escola      : 860.90
-  razao_alunos_turma       : 31.39
-
-🏆 RANK 2 ---
-  ...
-```
-
----
-
 ## 💡 Perguntas Conceituais
+
+Esta seção detalha as estratégias adotadas no desenho da solução, abordando orquestração, consistência de dados e consumo analítico.
 
 ### 1. Como atualizar diariamente utilizando Terraform, GitHub Actions, Docker e Kubernetes?
 
-Para transformar este pipeline *one-shot* em uma execução diária robusta, aderente às práticas de DevOps e Plataforma de Dados utilizadas em ambientes corporativos escaláveis (como na Arco):
+O projeto foi desenhado para suportar transição fluida de execuções manuais (*one-shot*) para processos diários automatizados, utilizando o seguinte ecossistema:
 
-**Arquitetura proposta:**
+**Topologia de Implantação:**
 
 ```text
 Terraform (IaC)
-    ├── Provisiona Banco de Dados (PostgreSQL)
-    ├── Provisiona Container Registry (AWS ECR ou GCP Artifact Registry)
-    └── Provisiona Cluster Kubernetes (EKS / GKE)
+    ├── Banco de Dados (PostgreSQL)
+    ├── Container Registry (AWS ECR / GCP Artifact Registry)
+    └── Cluster Kubernetes (EKS / GKE)
 
 GitHub Actions (CI/CD)
-    ├── Trigger: Push na branch 'main'
-    ├── Build: Cria a imagem Docker do pipeline
-    └── Deploy: Faz o push para o Registry e aplica o manifesto no Kubernetes
+    ├── Trigger: Evento de 'push' na branch 'main'
+    ├── Build: Empacotamento do container via Dockerfile
+    └── Deploy: Publicação da imagem e aplicação do manifesto no K8s
 
-Kubernetes (Execução Diária)
-    └──▶ K8s CronJob (ex: schedule: "0 6 * * *")
-            └──▶ Instancia um Pod efêmero com a imagem do pipeline
-                  └──▶ Executa `python main.py` e o Pod é finalizado
+Kubernetes (Agendamento e Computação)
+    └──▶ K8s CronJob (Ex: schedule: "0 6 * * *")
+            └──▶ Pod Efêmero (Processamento Data pipeline)
+                  └──▶ `python main.py` -> Finalização do container
 ```
 
-**Implementação:**
+**Componentes:**
+- **Docker**: Encapsulamento da aplicação e dependências para garantir reprodutibilidade.
+- **Terraform**: Gerenciamento do ciclo de vida da infraestrutura em nuvem, garantindo versionamento dos recursos base.
+- **GitHub Actions**: Pipeline de integração contínua encarregado de testar e gerar a imagem do container a cada nova versão do repositório.
+- **Kubernetes (CronJob)**: Orquestrador da carga horária que instancia o pipeline, realiza o processamento e destrói o Pod em seguida, otimizando o uso de computação.
 
-1. **Dockerização**: O código do pipeline (`main.py`, arquivos auxiliares e dependências) é encapsulado em uma imagem utilizando um `Dockerfile`.
-2. **Terraform**: Ele provisiona o banco de dados, o cluster Kubernetes e as regras de acesso (IAM). Após a primeira criação, ele só é executado novamente se a infraestrutura precisar mudar (ex: dar "scale up" na memória do banco ou criar um ambiente de *raw*).
-3. **GitHub Actions**: Pipeline de CI/CD automatizado. Ao detectar uma mudança no código (Python ou SQL), faz o *build* da nova imagem Docker e a entrega no K8s.
-4. **Kubernetes**: É aqui que a **execução diária** acontece de fato. O Kubernetes levanta um *Pod* com o pipeline no horário agendado, ele processa os dados e desliga em seguida.
 ---
 
 ### 2. Como garantir não-duplicidade com chaves compostas e UPSERT?
 
-**Mecanismo implementado:**
+A modelagem de banco de dados prevê ingestões incrementais ou re-processamentos sem gerar redundância, aplicando a técnica de **UPSERT**.
+
+**Lógica Aplicada:**
 
 ```sql
--- Chave composta garante unicidade por entidade + ano
-CONSTRAINT pk_raw_escolas PRIMARY KEY (co_entidade, nu_ano_censo)
+-- Definição de chave composta como garantia de unicidade
+CONSTRAINT pk_silver_escolas PRIMARY KEY (co_entidade, nu_ano_censo)
 
--- UPSERT: insere se novo, atualiza se já existe
+-- Operação UPSERT
 INSERT INTO silver.escolas (...)
 SELECT ... FROM raw.escolas
 ON CONFLICT (co_entidade, nu_ano_censo)
@@ -271,22 +236,18 @@ DO UPDATE SET
     _loaded_at = NOW();
 ```
 
-**Por que funciona:**
-
-- A **Primary Key composta** `(CO_ENTIDADE, NU_ANO_CENSO)` cria um índice único no PostgreSQL.
-- O `INSERT ... ON CONFLICT ... DO UPDATE` (UPSERT) tem dois comportamentos:
-  - **Registro novo**: INSERT normal.
-  - **Registro existente**: UPDATE dos campos (mantém a mesma PK).
-- O campo `_loaded_at = NOW()` registra quando o dado foi atualizado pela última vez.
-- **Resultado**: Não importa quantas vezes o pipeline execute — os dados nunca serão duplicados.
+**Benefícios:**
+- **Restrição de Banco:** A constraint de *Primary Key* combinada (`CO_ENTIDADE` e `NU_ANO_CENSO`) bloqueia fisicamente duplicações.
+- **Idempotência:** A instrução `ON CONFLICT DO UPDATE` valida o registro: se for inédito, realiza o `INSERT`; se já existir, sobrescreve os dados defasados por meio do `UPDATE`. O pipeline pode ser executado *n* vezes sem corromper a base.
+- **Rastreabilidade:** A coluna `_loaded_at` registra o *timestamp* da última alteração.
 
 ---
 
 ### 3. Como garantir o consumo correto no Metabase?
 
-**Estratégia: OBT (One Big Table) com Dicionário de Dados**
+A interface final para ferramentas de visualização (ex: Metabase) baseia-se em uma modelagem do tipo **OBT (One Big Table)** disponibilizada na camada `gold`.
 
-Para garantir um consumo eficiente e facilitado por usuários de negócio no Metabase, a modelagem adotada na camada `gold` foi a de **OBT (One Big Table)**. Esta abordagem consolida todas as dimensões e métricas em uma única grande tabela/view desnormalizada.
+**Estrutura Lógica (OBT):**
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -301,16 +262,12 @@ Para garantir um consumo eficiente e facilitado por usuários de negócio no Met
 └──────────────────┴──────────────────┴─────────────────┴────────────────┘
 ```
 
-**Por que OBT (One Big Table)?**
-- **Performance de Leitura:** Elimina a necessidade de múltiplos `JOINs` no momento da query, acelerando os relatórios do BI.
-- **Usabilidade (Self-Service BI):** O usuário de negócios encontra todas as métricas e recortes disponíveis em uma única "tabela", não precisando entender os relacionamentos de um modelo relacional clássico.
-
-**Boas práticas para o consumo no BI:**
-
-1. **Dicionário de Dados**: Documentar a origem e a regra de negócio de cada métrica disponível na tabela, garantindo que o usuário de negócio saiba exatamente o que está analisando.
-2. **Nomenclatura Amigável**: Renomear colunas no BI para termos claros e de negócio (ex: `sg_uf` vira "Estado"), facilitando a cultura de Self-Service BI.
-3. **Criação de Filtros Globais**: Como todas as dimensões (`Ano`, `UF`, `Localização`) já estão na tabela, fica muito simples configurar painéis interativos onde o usuário filtra todo o dashboard sem necessidade de novas queries.
-4. **Ocultação de Campos Técnicos**: Esconder do usuário final os campos de controle do banco de dados (como datas de processamento e IDs sistêmicos), mantendo a interface limpa e focada apenas nas métricas.
+**Diretrizes de Implementação e Boas Práticas:**
+- **Desempenho de Leitura:** A desnormalização suprime a necessidade de processamento massivo de `JOINs` no banco transacional no momento da leitura, diminuindo a latência para o usuário.
+- **Self-Service BI:** Simplifica a exploração. Usuários sem domínio de SQL compreendem a visão linear sem depender da engenharia de dados para montar consultas relacionais.
+- **Semântica e Dicionário de Dados:** O catálogo do BI deve traduzir campos técnicos para o jargão de negócio (ex: `sg_uf` -> "Estado da Federação"), provendo descrições formais sobre o cálculo de métricas derivadas.
+- **Filtros Globais:** A consolidação de dimensões possibilita a aplicação de filtros em nível de painel que interagem diretamente com o dataset base sem *subqueries* complexas.
+- **Governança:** Metadados como chaves primárias numéricas ou datas de controle de carga (`_loaded_at`) não são expostos aos painéis dos usuários finais, reduzindo ruído visual.
 
 ---
 
