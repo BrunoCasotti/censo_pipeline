@@ -66,6 +66,16 @@ html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
 ::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.4); }
+
+/* Tooltip Informativo 'i' */
+.tooltip-container { display: inline-block; position: relative; cursor: help; margin-left: 10px; vertical-align: middle; }
+.tooltip-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background-color: var(--accent-blue); color: white; font-size: 14px; font-weight: bold; font-family: var(--font-body); box-shadow: 0 4px 10px rgba(47,116,208,0.2); transition: transform 0.2s ease; }
+.tooltip-container:hover .tooltip-icon { transform: scale(1.1); }
+.tooltip-content { visibility: hidden; opacity: 0; position: absolute; top: 130%; left: 50%; transform: translateX(-50%) translateY(-10px); background-color: #FFFFFF; color: #4A5568; text-align: left; padding: 1rem; border-radius: 8px; border: 1px solid rgba(0,28,70,0.1); width: max-content; max-width: 400px; font-size: 0.8rem; line-height: 1.4; box-shadow: 0 10px 30px rgba(0,28,70,0.15); transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1); z-index: 1000; }
+.tooltip-content::after { content: ""; position: absolute; bottom: 100%; left: 50%; margin-left: -8px; border-width: 8px; border-style: solid; border-color: transparent transparent #FFFFFF transparent; }
+.tooltip-container:hover .tooltip-content { visibility: visible; opacity: 1; transform: translateX(-50%) translateY(0); }
+.tooltip-content strong { color: var(--text-on-card); font-family: var(--font-display); letter-spacing: 0; font-size: 0.85rem; }
+.tooltip-content .t-item { margin-bottom: 0.4rem; display: block; font-family: var(--font-body); font-weight: 500; color: #4A5568 !important; }
 """
 
 arco_svg = """
@@ -241,10 +251,22 @@ def generate_dashboard():
         <div class="slide-content" style="max-width: 1300px; margin: 0 auto; width: 100%;">
             
             <!-- Header Section -->
-            <div style="margin-bottom: 1.5rem; display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 1rem;">
+            <div style="margin-bottom: 1.5rem; display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 1rem; position: relative; z-index: 1000;">
                 <div>
                     <h1 class="reveal delay-1" style="font-family: var(--font-display); font-size: var(--title-size); text-transform: uppercase; letter-spacing: -1px; line-height: 1;">CENSO ESCOLAR <span style="color: var(--accent-red);">2025</span></h1>
-                    <p class="reveal delay-2" style="font-size: var(--h3-size); margin-top: 0.3rem; opacity: 0.8; font-weight: 500;">Destaques de Infraestrutura (Top 3)</p>
+                    <div class="reveal delay-2" style="font-size: var(--h3-size); margin-top: 0.3rem; font-weight: 500; display: flex; align-items: center; position: relative; z-index: 50;">
+                        <span style="opacity: 0.8;">Destaques de Infraestrutura (Top 3)</span>
+                        <div class="tooltip-container">
+                            <span class="tooltip-icon">i</span>
+                            <div class="tooltip-content">
+                                <strong>Critérios & Métricas:</strong><br><br>
+                                <span class="t-item"><strong>Filtro Base:</strong> Apenas escolas em atividade.</span>
+                                <span class="t-item"><strong>Ordenação (Top 3):</strong> Maiores médias de alunos por escola (media_alunos_escola DESC).</span>
+                                <span class="t-item"><strong>% Acessibilidade:</strong> Escolas com pelo menos 1 item de acessibilidade.</span>
+                                <span class="t-item"><strong>% Conectadas:</strong> Escolas com Internet, Banda Larga e Energia simultaneamente.</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 <div class="reveal delay-2">
                     {arco_svg}
